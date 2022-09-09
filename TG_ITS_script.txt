@@ -1,0 +1,165 @@
+##STEP 1 - IMPORT
+
+qiime tools import \
+  --type 'SampleData[PairedEndSequencesWithQuality]' \
+  --input-path ../220822_M02300_0041_000000000-K3GLV_ANALYSIS/FASTQ_trimmed/ITS_new_manifest.tsv \
+  --input-format PairedEndFastqManifestPhred33V2 \
+  --output-path demux-paired-end.qza
+
+qiime demux summarize \
+  --i-data demux-paired-end.qza \
+  --o-visualization demux-paired-end.qzv
+
+##STEP 2 - DENOISE
+
+qiime cutadapt trim-paired \
+--i-demultiplexed-sequences demux-paired-end.qza \
+--p-adapter-f GCATCGATGAAGAACGCAGC \
+--p-adapter-r TTACTTCCTCTAAATGACCAAG \
+--verbose \
+--o-trimmed-sequences demux-paired-end-adapter-trimmed.qza
+
+qiime cutadapt trim-paired \
+--i-demultiplexed-sequences demux-paired-end-adapter-trimmed.qza \
+--p-front-f CTTGGTCATTTAGAGGAAGTAA \
+--p-front-r GCTGCGTTCTTCATCGATGC \
+--verbose \
+--o-trimmed-sequences demux-paired-end-trimmed.qza
+
+qiime dada2 denoise-paired \
+  --i-demultiplexed-seqs demux-paired-end-trimmed.qza \
+  --p-trunc-len-f 0 \
+  --p-trunc-len-r 0 \
+  --output-dir dada2_output \
+  --verbose
+
+qiime feature-table summarize \
+  --i-table dada2_output/table.qza \
+  --o-visualization dada2_output/dada2_table_summary.qzv
+
+qiime feature-table tabulate-seqs \
+  --i-data dada2_output/representative_sequences.qza \
+  --o-visualization dada2_output/rep-seqs.qzv
+
+qiime tools export \
+  --input-path dada2_output/denoising_stats.qza \
+  --output-path dada2_output
+
+STEP 3 - Filtering low frequency ASVS
+
+qiime feature-table filter-features \
+  --i-table dada2_output/table.qza \
+  --p-min-frequency 51 \
+  --p-min-samples 1 \
+  --o-filtered-table dada2_output/dada2_table_filtered.qza
+
+qiime feature-table filter-seqs \
+  --i-data dada2_output/representative_sequences.qza \
+  --i-table dada2_output/dada2_table_filtered.qza \
+  --o-filtered-data dada2_output/rep_seqs_filtered.qza
+
+qiime feature-table summarize \
+  --i-table dada2_output/dada2_table_filtered.qza \
+  --o-visualization dada2_output/dada2_table_filtered_summary.qzv
+
+qiime feature-table tabulate-seqs \
+  --i-data dada2_output/rep_seqs_filtered.qza \
+  --o-visualization dada2_output/rep_seqs_filtered.qzv
+
+##STEP 4 - Assign Taxonomy
+
+qiime tools import \
+ --type FeatureData[Sequence] \
+ --input-path ../training-feature-classifiers/sh_qiime_release_10.05.2021/developer/sh_refs_qiime_ver8_99_10.05.2021_dev_uppercase.fasta \
+ --output-path ../training-feature-classifiers/unite-ver8-99-seqs-10.05.2021.qza
+
+qiime tools import \
+ --type FeatureData[Taxonomy] \
+ --input-path ../training-feature-classifiers/sh_qiime_release_10.05.2021/developer/sh_taxonomy_qiime_ver8_99_10.05.2021_dev.txt \
+ --output-path ../training-feature-classifiers/unite-ver8-99-tax-10.05.2021.qza \
+ --input-format HeaderlessTSVTaxonomyFormat
+
+qiime feature-classifier fit-classifier-naive-bayes \
+ --i-reference-reads unite-ver8-99-seqs-10.05.2021.qza \
+ --i-reference-taxonomy unite-ver8-99-tax-10.05.2021.qza \
+ --o-classifier unite-ver8-99-classifier-10.05.2021.qza
+
+qiime feature-classifier classify-sklearn \
+  --i-reads dada2_output/rep_seqs_filtered.qza \
+  --i-classifier ../training-feature-classifiers/unite-ver8-99-classifier-10.05.2021.qza \
+  --output-dir taxa \
+  --verbose
+
+qiime tools export \
+  --input-path taxa/classification.qza \
+  --output-path taxa
+
+qiime taxa barplot \
+  --i-table dada2_output/dada2_table_filt.qza \
+  --i-taxonomy taxa/classification.qza \
+  --m-metadata-file metadata.tsv \
+  --o-visualization taxa/taxa_barplot.qzv
+
+##STEP 5 ghost-tree
+
+qiime tools import \
+--input-path ghost_tree.nwk \
+--type Phylogeny[Unrooted] \
+--output-path ghost-tree-unrooted.qza
+
+qiime phylogeny midpoint-root \
+--i-tree ghost-tree-unrooted.qza \
+--o-rooted-tree ghost-tree-midpoint-root.qza
+
+qiime vsearch cluster-features-closed-reference \
+  --i-table dada2_output/dada2_table_filtered.qza \
+  --i-sequences rep-seqs-filtered.qza \
+  --i-reference-sequences ../training-feature-classifiers/unite-ver8-99-seqs-10.05.2021.qza \
+  --p-perc-identity 0.99 \
+  --o-clustered-table table-cr-99.qza \
+  --o-clustered-sequences rep-seqs-cr-99.qza \
+  --o-unmatched-sequences unmatched-cr-99.qza
+
+qiime feature-table filter-features \
+--i-table table-cr-99.qza \
+--m-metadata-file ghost_tree_extension_accession_ids.txt \
+--o-filtered-table ghost-tree-table.qza
+
+##STEP 8 Rerefaction curve
+
+qiime diversity alpha-rarefaction \
+  --i-table dada2_output/dada2_table_filtered.qza \
+  --p-max-depth 36368 \
+  --p-steps 20 \
+  --m-metadata-file metadata.tsv \
+  --o-visualization rarefaction_curves.qzv
+  
+qiime diversity alpha-rarefaction \
+  --i-table dada2_output/dada2_table_filtered.qza \
+  --p-max-depth 36368 \
+  --p-steps 20 \
+  --i-phylogeny tree_out/filtered_aligned_masked_tree_rooted.qza \
+  --o-visualization rarefaction_curves_eachsample.qzv
+
+##STEP 9 - DIVERSITY ANALYSIS + ORDINATION PLOTS 
+
+qiime diversity core-metrics \
+  --i-table dada2_output/dada2_table_filtered.qza \
+  --p-sampling-depth 17622 \
+  --m-metadata-file metadata.tsv \
+  --p-n-jobs 4 \
+  --output-dir diversity
+
+qiime tools export \
+  --input-path diversity/observed_features_vector.qza \
+  --output-path observed_features_vector
+
+qiime diversity alpha-group-significance \
+  --i-alpha-diversity diversity/shannon_vector.qza \
+  --m-metadata-file metadata.tsv \
+  --o-visualization diversity/shannon_compare_groups.qzv
+
+qiime diversity alpha-group-significance \
+  --i-alpha-diversity diversity/observed_features_vector.qza \
+  --m-metadata-file metadata.tsv \
+  --o-visualization diversity/observed_compare_groups.qzv
